@@ -52,7 +52,8 @@ let recognizeStream;
 let recordingStream;
 let silenceTimer;
 let lastActivity = Date.now();
-const SILENCE_TIMEOUT = 30000; // 30 seconds
+const SILENCE_TIMEOUT = 5000; // 5 seconds - stop listening after this
+let isListening = true;
 
 function createRecognizeStream() {
   recognizeStream = client
@@ -139,10 +140,11 @@ let consecutiveSilentChunks = 0;
 setInterval(() => {
   const timeSinceLastActivity = Date.now() - lastActivity;
   
-  if (timeSinceLastActivity > SILENCE_TIMEOUT) {
-    console.log('No activity for 30 seconds - cost saving mode');
-    io.emit('status', { message: 'Paused - will resume when you speak', isPaused: true });
-  } else {
+  if (timeSinceLastActivity > SILENCE_TIMEOUT && isListening) {
+    console.log('No audio for 5 seconds - but keeping recognition active');
+    io.emit('status', { message: 'Silent - still listening', isPaused: true });
+    // Don't stop recognition - keep listening
+  } else if (isListening) {
     io.emit('status', { message: 'Active', isPaused: false });
   }
 }, 1000);
@@ -161,38 +163,57 @@ recordingStream.on('data', (chunk) => {
     lastAudioCheck = Date.now();
   }
   
-  // Detect mute as sudden drop to very low levels
-  if (maxLevel < 30) {  // Mute threshold
+  // Detect audio activity
+  if (maxLevel > 200) {
+    // Update activity time when audio is detected
+    lastActivity = Date.now();
+    
+    // No need to restart since we never stop listening
+    if (!isListening && !muteDetected) {
+      console.log('Audio detected - recognition already active');
+      io.emit('status', { message: 'Active', isPaused: false });
+      isListening = true;
+    }
+  }
+  
+  // Detect mute when audio is exactly 0 (complete silence from mute button)
+  if (maxLevel === 0) {
     if (!muteDetected) {
       muteDetected = true;
-      console.log('🔇 MUTE DETECTED - Audio dropped to:', maxLevel);
-      io.emit('status', { message: 'Muted - click mute button to resume', isPaused: true, muted: true });
+      console.log('🔇 MUTE BUTTON PRESSED - Audio is zero (still listening)');
+      io.emit('status', { message: 'Muted - still listening', isPaused: true, muted: true });
       
-      // Actually stop the recognition to save money
-      if (recognizeStream) {
-        recognizeStream.end();
-        console.log('Recognition stream ended to save costs');
-      }
+      // Don't stop recognition - keep listening even when muted
     }
-  } else if (muteDetected && maxLevel > 100) {
-    // Unmute detected 
+  } else if (muteDetected && maxLevel > 200) {
+    // Unmute when audio comes back strong
     muteDetected = false;
-    console.log('🔊 UNMUTE DETECTED - Audio back to:', maxLevel);
-    io.emit('status', { message: 'Active - Restarting recognition', isPaused: false, muted: false });
+    console.log('🔊 UNMUTED - Audio back to:', maxLevel);
+    io.emit('status', { message: 'Active', isPaused: false, muted: false });
     
-    // Restart recognition stream
-    restartStream();
+    // No need to restart since we never stopped
+    isListening = true;
   }
 });
 
 // Handle uncaught exceptions to prevent server crashes
 process.on('uncaughtException', (error) => {
   console.error('Uncaught Exception:', error);
+  
+  // Send error to Terminal via AppleScript
+  const errorMsg = `[ERROR] Transcription server error: ${error.message}`;
+  injectTextToActiveField(errorMsg, true);
+  
   setTimeout(restartStream, 1000);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  
+  // Send error to Terminal via AppleScript
+  const errorMsg = `[ERROR] Unhandled promise rejection: ${reason}`;
+  injectTextToActiveField(errorMsg, true);
+  
   setTimeout(restartStream, 1000);
 });
 
@@ -229,16 +250,44 @@ function injectTextToActiveField(text, pressEnter = true) {
   });
 }
 
+// Add periodic health check that types status into Terminal
+let lastHealthCheck = Date.now();
+const HEALTH_CHECK_INTERVAL = 10000; // 10 seconds
+
+setInterval(() => {
+  const now = Date.now();
+  
+  // Check if we have any connected clients
+  const connectedClients = io.sockets.sockets.size;
+  
+  if (connectedClients === 0) {
+    // No browser connected - type warning
+    const warningMsg = '[WARNING] No browser connected to transcription server';
+    injectTextToActiveField(warningMsg, true);
+  }
+  
+  // Update health check timestamp
+  lastHealthCheck = now;
+}, HEALTH_CHECK_INTERVAL);
+
 // Start server
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
   console.log('Open this URL in your browser to see live transcriptions');
+  
+  // Type startup message to Terminal
+  const startupMsg = `[INFO] Transcription server started on port ${PORT}`;
+  injectTextToActiveField(startupMsg, true);
 });
 
 // Handle shutdown
 process.on('SIGINT', () => {
   console.log('\nStopping transcription server...');
+  
+  // Type shutdown message to Terminal
+  const shutdownMsg = '[INFO] Transcription server shutting down';
+  injectTextToActiveField(shutdownMsg, true);
   
   // End streams
   if (recognizeStream) {
