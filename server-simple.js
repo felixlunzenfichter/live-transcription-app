@@ -52,7 +52,7 @@ let recognizeStream;
 let recordingStream;
 let silenceTimer;
 let lastActivity = Date.now();
-const SILENCE_TIMEOUT = 30000; // 30 seconds
+const SILENCE_TIMEOUT = 5000; // 5 seconds
 
 function createRecognizeStream() {
   recognizeStream = client
@@ -133,57 +133,16 @@ recordingStream = recorder
 recordingStream.pipe(recognizeStream);
 
 // Check for silence periodically
-let muteDetected = false;
-let consecutiveSilentChunks = 0;
-
 setInterval(() => {
   const timeSinceLastActivity = Date.now() - lastActivity;
   
   if (timeSinceLastActivity > SILENCE_TIMEOUT) {
-    console.log('No activity for 30 seconds - cost saving mode');
+    console.log('No activity for 5 seconds - cost saving mode');
     io.emit('status', { message: 'Paused - will resume when you speak', isPaused: true });
   } else {
     io.emit('status', { message: 'Active', isPaused: false });
   }
 }, 1000);
-
-// Add immediate audio level monitoring
-let lastAudioCheck = Date.now();
-
-recordingStream.on('data', (chunk) => {
-  // Convert buffer to array for analysis
-  const audioData = [...chunk];
-  const maxLevel = Math.max(...audioData.map(v => Math.abs(v)));
-  
-  // Log every 100ms for debugging
-  if (Date.now() - lastAudioCheck > 100) {
-    console.log('Audio level:', maxLevel);
-    lastAudioCheck = Date.now();
-  }
-  
-  // Detect mute as sudden drop to very low levels
-  if (maxLevel < 30) {  // Mute threshold
-    if (!muteDetected) {
-      muteDetected = true;
-      console.log('🔇 MUTE DETECTED - Audio dropped to:', maxLevel);
-      io.emit('status', { message: 'Muted - click mute button to resume', isPaused: true, muted: true });
-      
-      // Actually stop the recognition to save money
-      if (recognizeStream) {
-        recognizeStream.end();
-        console.log('Recognition stream ended to save costs');
-      }
-    }
-  } else if (muteDetected && maxLevel > 100) {
-    // Unmute detected 
-    muteDetected = false;
-    console.log('🔊 UNMUTE DETECTED - Audio back to:', maxLevel);
-    io.emit('status', { message: 'Active - Restarting recognition', isPaused: false, muted: false });
-    
-    // Restart recognition stream
-    restartStream();
-  }
-});
 
 // Handle uncaught exceptions to prevent server crashes
 process.on('uncaughtException', (error) => {

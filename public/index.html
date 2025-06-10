@@ -277,6 +277,18 @@
             }
         });
 
+        // Handle pause/resume status
+        socket.on('status', (data) => {
+            if (data.isPaused) {
+                listeningIndicator.classList.remove('active');
+                currentTextEl.textContent = 'Paused - will resume when you speak';
+                currentTextEl.style.color = '#ff9800';
+            } else if (listeningIndicator) {
+                listeningIndicator.classList.add('active');
+                currentTextEl.textContent = '';
+                currentTextEl.style.color = '';
+            }
+        });
 
     </script>
 </body>

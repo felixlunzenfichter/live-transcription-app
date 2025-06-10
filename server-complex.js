@@ -43,6 +43,12 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     console.log('Client disconnected');
   });
+  
+  // Handle requests to inject text into active text field
+  socket.on('inject_to_active_field', (data) => {
+    console.log('Injecting to active field:', data.text);
+    injectTextToActiveField(data.text, data.pressEnter);
+  });
 });
 
 // Start recording and transcription
@@ -51,15 +57,22 @@ console.log('Starting transcription service...');
 let recognizeStream;
 let recordingStream;
 let silenceTimer;
-let lastActivity = Date.now();
-const SILENCE_TIMEOUT = 30000; // 30 seconds
+let isStreaming = false;
+const SILENCE_TIMEOUT = 5000; // 5 seconds of silence
 
 function createRecognizeStream() {
+  isStreaming = true;
+  
   recognizeStream = client
     .streamingRecognize(request)
     .on('error', (error) => {
       console.error('Error:', error);
       io.emit('error', error.message);
+      
+      // Check if it's a duration limit error
+      if (error.message && error.message.includes('stream duration')) {
+        console.log('Stream duration limit reached, restarting...');
+      }
       
       // Attempt to restart on any error
       setTimeout(restartStream, 1000);
@@ -69,15 +82,15 @@ function createRecognizeStream() {
         const transcript = data.results[0].alternatives[0].transcript;
         const isFinal = data.results[0].isFinal;
         
-        // Update last activity time
-        lastActivity = Date.now();
-        
         // Emit to all connected clients
         io.emit('transcription', {
           text: transcript,
           isFinal: isFinal,
           timestamp: new Date().toISOString()
         });
+        
+        // Reset silence timer on any speech activity
+        resetSilenceTimer();
         
         if (isFinal) {
           console.log('Final:', transcript);
@@ -88,9 +101,12 @@ function createRecognizeStream() {
           }
         } else {
           console.log('Interim:', transcript);
+          // Don't type interim results - only show them in the web interface
         }
       }
     });
+
+  // Removed timer-based restart - will rely on error-based restart when duration limit is hit
 
   return recognizeStream;
 }
@@ -130,72 +146,77 @@ recordingStream = recorder
   .stream()
   .on('error', console.error);
 
-recordingStream.pipe(recognizeStream);
+// Create a passthrough stream to monitor audio levels
+const { Transform } = require('stream');
 
-// Check for silence periodically
-let muteDetected = false;
-let consecutiveSilentChunks = 0;
-
-setInterval(() => {
-  const timeSinceLastActivity = Date.now() - lastActivity;
-  
-  if (timeSinceLastActivity > SILENCE_TIMEOUT) {
-    console.log('No activity for 30 seconds - cost saving mode');
-    io.emit('status', { message: 'Paused - will resume when you speak', isPaused: true });
-  } else {
-    io.emit('status', { message: 'Active', isPaused: false });
-  }
-}, 1000);
-
-// Add immediate audio level monitoring
-let lastAudioCheck = Date.now();
-
-recordingStream.on('data', (chunk) => {
-  // Convert buffer to array for analysis
-  const audioData = [...chunk];
-  const maxLevel = Math.max(...audioData.map(v => Math.abs(v)));
-  
-  // Log every 100ms for debugging
-  if (Date.now() - lastAudioCheck > 100) {
-    console.log('Audio level:', maxLevel);
-    lastAudioCheck = Date.now();
-  }
-  
-  // Detect mute as sudden drop to very low levels
-  if (maxLevel < 30) {  // Mute threshold
-    if (!muteDetected) {
-      muteDetected = true;
-      console.log('🔇 MUTE DETECTED - Audio dropped to:', maxLevel);
-      io.emit('status', { message: 'Muted - click mute button to resume', isPaused: true, muted: true });
+const audioMonitor = new Transform({
+  transform(chunk, encoding, callback) {
+    // Check if there's actual audio (not just silence)
+    const audioLevel = Math.max(...chunk);
+    
+    if (audioLevel > 20) { // Threshold for voice detection
+      resetSilenceTimer();
       
-      // Actually stop the recognition to save money
-      if (recognizeStream) {
-        recognizeStream.end();
-        console.log('Recognition stream ended to save costs');
+      // Auto-restart if we were paused
+      if (!isStreaming) {
+        console.log('Voice detected - automatically resuming transcription');
+        restartStream();
       }
     }
-  } else if (muteDetected && maxLevel > 100) {
-    // Unmute detected 
-    muteDetected = false;
-    console.log('🔊 UNMUTE DETECTED - Audio back to:', maxLevel);
-    io.emit('status', { message: 'Active - Restarting recognition', isPaused: false, muted: false });
     
-    // Restart recognition stream
-    restartStream();
+    // Pass audio through only if streaming
+    if (isStreaming) {
+      callback(null, chunk);
+    } else {
+      callback(); // Don't pass audio if not streaming
+    }
   }
 });
+
+recordingStream.pipe(audioMonitor).pipe(recognizeStream);
+
+// Function to reset the silence timer
+function resetSilenceTimer() {
+  if (silenceTimer) {
+    clearTimeout(silenceTimer);
+  }
+  
+  if (isStreaming) {
+    silenceTimer = setTimeout(() => {
+      console.log('5 seconds of silence detected - pausing transcription to save costs');
+      if (recognizeStream && isStreaming) {
+        recognizeStream.end();
+        isStreaming = false;
+        io.emit('status', { message: 'Transcription paused - will resume when you speak', isPaused: true });
+      }
+    }, SILENCE_TIMEOUT);
+  }
+}
+
+// Start the silence timer
+resetSilenceTimer();
 
 // Handle uncaught exceptions to prevent server crashes
 process.on('uncaughtException', (error) => {
   console.error('Uncaught Exception:', error);
+  console.log('Attempting to restart stream after uncaught exception...');
   setTimeout(restartStream, 1000);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  console.log('Attempting to restart stream after unhandled rejection...');
   setTimeout(restartStream, 1000);
 });
 
+// Start server
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
+  console.log('Open this URL in your browser to see live transcriptions');
+});
+
+// Handle shutdown
 // Function to inject text into the active text field using AppleScript
 function injectTextToActiveField(text, pressEnter = true) {
   const scriptPath = path.join(__dirname, 'type-text.applescript');
@@ -229,14 +250,15 @@ function injectTextToActiveField(text, pressEnter = true) {
   });
 }
 
-// Start server
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-  console.log('Open this URL in your browser to see live transcriptions');
+// Handle socket connections
+io.on('connection', (socket) => {
+  console.log('Client connected');
+  
+  socket.on('disconnect', () => {
+    console.log('Client disconnected');
+  });
 });
 
-// Handle shutdown
 process.on('SIGINT', () => {
   console.log('\nStopping transcription server...');
   
