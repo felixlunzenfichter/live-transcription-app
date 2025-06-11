@@ -50,9 +50,15 @@
         main {
             flex: 1;
             padding: 40px 20px;
-            max-width: 1200px;
+            max-width: 1400px;
             width: 100%;
             margin: 0 auto;
+        }
+
+        .main-container {
+            display: grid;
+            grid-template-columns: 1fr 400px;
+            gap: 20px;
         }
 
         .transcription-container {
@@ -61,6 +67,58 @@
             padding: 30px;
             min-height: 400px;
             box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        }
+
+        .visualizations-container {
+            background: #2a2a2a;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        }
+
+        .viz-section {
+            margin-bottom: 30px;
+        }
+
+        .viz-label {
+            font-size: 0.8em;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 10px;
+        }
+
+        .viz-canvas {
+            width: 100%;
+            height: 80px;
+            background: #1a1a1a;
+            border-radius: 5px;
+            margin-bottom: 10px;
+        }
+
+        .audio-stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            font-size: 0.9em;
+            color: #aaa;
+        }
+
+        .stat-item {
+            background: #1a1a1a;
+            padding: 10px;
+            border-radius: 5px;
+        }
+
+        .stat-label {
+            font-size: 0.8em;
+            color: #666;
+        }
+
+        .stat-value {
+            font-size: 1.2em;
+            color: #4caf50;
+            font-weight: 500;
         }
 
         .current-transcription {
@@ -199,25 +257,68 @@
     </header>
 
     <main>
-        <div class="transcription-container">
-            <div class="current-transcription">
-                <div class="current-label">Current Transcription</div>
-                <div class="current-text" id="currentText"></div>
-                <div class="listening-indicator" id="listeningIndicator">
-                    <span>Listening</span>
-                    <div class="wave-animation">
-                        <div class="wave-bar"></div>
-                        <div class="wave-bar"></div>
-                        <div class="wave-bar"></div>
-                        <div class="wave-bar"></div>
-                        <div class="wave-bar"></div>
+        <div class="main-container">
+            <div class="transcription-container">
+                <div class="current-transcription">
+                    <div class="current-label">Current Transcription</div>
+                    <div class="current-text" id="currentText"></div>
+                    <div class="listening-indicator" id="listeningIndicator">
+                        <span>Listening</span>
+                        <div class="wave-animation">
+                            <div class="wave-bar"></div>
+                            <div class="wave-bar"></div>
+                            <div class="wave-bar"></div>
+                            <div class="wave-bar"></div>
+                            <div class="wave-bar"></div>
+                        </div>
                     </div>
+                </div>
+
+                <div class="history-section">
+                    <div class="history-label">Transcription History</div>
+                    <div class="history" id="history"></div>
                 </div>
             </div>
 
-            <div class="history-section">
-                <div class="history-label">Transcription History</div>
-                <div class="history" id="history"></div>
+            <div class="visualizations-container">
+                <div class="viz-section">
+                    <div class="viz-label">Audio Level (dB)</div>
+                    <canvas class="viz-canvas" id="levelCanvas"></canvas>
+                </div>
+
+                <div class="viz-section">
+                    <div class="viz-label">Frequency Spectrum</div>
+                    <canvas class="viz-canvas" id="spectrumCanvas"></canvas>
+                </div>
+
+                <div class="viz-section">
+                    <div class="viz-label">Voice Activity Probability</div>
+                    <canvas class="viz-canvas" id="vadCanvas"></canvas>
+                </div>
+
+                <div class="viz-section">
+                    <div class="viz-label">Pitch Detection (Hz)</div>
+                    <canvas class="viz-canvas" id="pitchCanvas"></canvas>
+                </div>
+
+                <div class="audio-stats">
+                    <div class="stat-item">
+                        <div class="stat-label">RMS Energy</div>
+                        <div class="stat-value" id="rmsValue">0.00</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">Peak Level</div>
+                        <div class="stat-value" id="peakValue">0</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">Zero Crossings</div>
+                        <div class="stat-value" id="zcValue">0</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">Spectral Centroid</div>
+                        <div class="stat-value" id="centroidValue">0</div>
+                    </div>
+                </div>
             </div>
         </div>
     </main>
@@ -231,6 +332,148 @@
         const listeningIndicator = document.getElementById('listeningIndicator');
 
         let isListening = false;
+
+        // Canvas setup
+        const levelCanvas = document.getElementById('levelCanvas');
+        const spectrumCanvas = document.getElementById('spectrumCanvas');
+        const vadCanvas = document.getElementById('vadCanvas');
+        const pitchCanvas = document.getElementById('pitchCanvas');
+
+        const levelCtx = levelCanvas.getContext('2d');
+        const spectrumCtx = spectrumCanvas.getContext('2d');
+        const vadCtx = vadCanvas.getContext('2d');
+        const pitchCtx = pitchCanvas.getContext('2d');
+
+        // Set canvas sizes
+        function resizeCanvases() {
+            [levelCanvas, spectrumCanvas, vadCanvas, pitchCanvas].forEach(canvas => {
+                canvas.width = canvas.offsetWidth;
+                canvas.height = canvas.offsetHeight;
+            });
+        }
+        resizeCanvases();
+        window.addEventListener('resize', resizeCanvases);
+
+        // History data for graphs
+        const historyLength = 100;
+        const levelHistory = new Array(historyLength).fill(0);
+        const vadHistory = new Array(historyLength).fill(0);
+        const pitchHistory = new Array(historyLength).fill(0);
+
+        // Draw functions
+        function drawLevelMeter(dB) {
+            levelCtx.fillStyle = '#1a1a1a';
+            levelCtx.fillRect(0, 0, levelCanvas.width, levelCanvas.height);
+
+            // Update history
+            levelHistory.shift();
+            levelHistory.push(dB);
+
+            // Draw graph
+            levelCtx.strokeStyle = '#4caf50';
+            levelCtx.lineWidth = 2;
+            levelCtx.beginPath();
+
+            for (let i = 0; i < levelHistory.length; i++) {
+                const x = (i / levelHistory.length) * levelCanvas.width;
+                const normalized = (levelHistory[i] + 60) / 60; // Normalize -60 to 0 dB
+                const y = levelCanvas.height - (normalized * levelCanvas.height);
+                
+                if (i === 0) {
+                    levelCtx.moveTo(x, y);
+                } else {
+                    levelCtx.lineTo(x, y);
+                }
+            }
+            levelCtx.stroke();
+
+            // Draw threshold line
+            levelCtx.strokeStyle = '#ff9800';
+            levelCtx.setLineDash([5, 5]);
+            const thresholdY = levelCanvas.height * 0.3;
+            levelCtx.beginPath();
+            levelCtx.moveTo(0, thresholdY);
+            levelCtx.lineTo(levelCanvas.width, thresholdY);
+            levelCtx.stroke();
+            levelCtx.setLineDash([]);
+        }
+
+        function drawSpectrum(frequencies) {
+            spectrumCtx.fillStyle = '#1a1a1a';
+            spectrumCtx.fillRect(0, 0, spectrumCanvas.width, spectrumCanvas.height);
+
+            if (!frequencies || frequencies.length === 0) return;
+
+            const barWidth = spectrumCanvas.width / frequencies.length;
+            
+            frequencies.forEach((freq, i) => {
+                const height = (freq / 255) * spectrumCanvas.height;
+                const hue = 120 - (freq / 255) * 60; // Green to yellow
+                spectrumCtx.fillStyle = `hsl(${hue}, 70%, 50%)`;
+                spectrumCtx.fillRect(i * barWidth, spectrumCanvas.height - height, barWidth - 1, height);
+            });
+        }
+
+        function drawVAD(probability) {
+            vadCtx.fillStyle = '#1a1a1a';
+            vadCtx.fillRect(0, 0, vadCanvas.width, vadCanvas.height);
+
+            // Update history
+            vadHistory.shift();
+            vadHistory.push(probability);
+
+            // Draw graph
+            vadCtx.strokeStyle = '#2196f3';
+            vadCtx.lineWidth = 2;
+            vadCtx.beginPath();
+
+            for (let i = 0; i < vadHistory.length; i++) {
+                const x = (i / vadHistory.length) * vadCanvas.width;
+                const y = vadCanvas.height - (vadHistory[i] * vadCanvas.height);
+                
+                if (i === 0) {
+                    vadCtx.moveTo(x, y);
+                } else {
+                    vadCtx.lineTo(x, y);
+                }
+            }
+            vadCtx.stroke();
+
+            // Fill under curve
+            vadCtx.lineTo(vadCanvas.width, vadCanvas.height);
+            vadCtx.lineTo(0, vadCanvas.height);
+            vadCtx.closePath();
+            vadCtx.fillStyle = 'rgba(33, 150, 243, 0.2)';
+            vadCtx.fill();
+        }
+
+        function drawPitch(hz) {
+            pitchCtx.fillStyle = '#1a1a1a';
+            pitchCtx.fillRect(0, 0, pitchCanvas.width, pitchCanvas.height);
+
+            // Update history
+            pitchHistory.shift();
+            pitchHistory.push(hz);
+
+            // Draw graph
+            pitchCtx.strokeStyle = '#e91e63';
+            pitchCtx.lineWidth = 2;
+            pitchCtx.beginPath();
+
+            for (let i = 0; i < pitchHistory.length; i++) {
+                const x = (i / pitchHistory.length) * pitchCanvas.width;
+                // Map 50-400 Hz to canvas height
+                const normalized = Math.max(0, Math.min(1, (pitchHistory[i] - 50) / 350));
+                const y = pitchCanvas.height - (normalized * pitchCanvas.height);
+                
+                if (i === 0 || pitchHistory[i] === 0) {
+                    pitchCtx.moveTo(x, y);
+                } else {
+                    pitchCtx.lineTo(x, y);
+                }
+            }
+            pitchCtx.stroke();
+        }
 
         socket.on('connect', () => {
             statusEl.textContent = 'Connected - Ready to transcribe';
@@ -289,6 +532,49 @@
                 currentTextEl.style.color = '';
             }
         });
+
+        // Handle audio analysis data
+        socket.on('audioData', (data) => {
+            // Update visualizations
+            if (data.level !== undefined) {
+                drawLevelMeter(data.level);
+            }
+            
+            if (data.spectrum) {
+                drawSpectrum(data.spectrum);
+            }
+            
+            if (data.vadProbability !== undefined) {
+                drawVAD(data.vadProbability);
+            }
+            
+            if (data.pitch !== undefined) {
+                drawPitch(data.pitch);
+            }
+            
+            // Update stats
+            if (data.rms !== undefined) {
+                document.getElementById('rmsValue').textContent = data.rms.toFixed(3);
+            }
+            
+            if (data.peak !== undefined) {
+                document.getElementById('peakValue').textContent = data.peak;
+            }
+            
+            if (data.zeroCrossings !== undefined) {
+                document.getElementById('zcValue').textContent = data.zeroCrossings;
+            }
+            
+            if (data.spectralCentroid !== undefined) {
+                document.getElementById('centroidValue').textContent = Math.round(data.spectralCentroid);
+            }
+        });
+
+        // Initialize empty visualizations
+        drawLevelMeter(-60);
+        drawSpectrum([]);
+        drawVAD(0);
+        drawPitch(0);
 
     </script>
 </body>

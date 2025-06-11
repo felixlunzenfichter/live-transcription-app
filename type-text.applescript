@@ -2,7 +2,15 @@ on run argv
     if (count of argv) > 0 then
         set textToType to item 1 of argv
         
-        -- Type the text into the currently active text field
+        -- Bring Terminal to the foreground
+        tell application "Terminal"
+            activate
+        end tell
+        
+        -- Small delay to ensure Terminal is active
+        delay 0.1
+        
+        -- Type the text into Terminal
         tell application "System Events"
             keystroke textToType
         end tell

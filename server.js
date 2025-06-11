@@ -149,10 +149,159 @@ setInterval(() => {
   }
 }, 1000);
 
+// Audio analysis functions
+function calculateRMS(buffer) {
+  const samples = new Int16Array(buffer);
+  let sumSquares = 0;
+  for (let i = 0; i < samples.length; i++) {
+    sumSquares += samples[i] * samples[i];
+  }
+  return Math.sqrt(sumSquares / samples.length) / 32768;
+}
+
+function calculateDB(rms) {
+  return 20 * Math.log10(Math.max(0.00001, rms));
+}
+
+function calculateZeroCrossings(buffer) {
+  const samples = new Int16Array(buffer);
+  let crossings = 0;
+  let previousSign = samples[0] >= 0;
+  
+  for (let i = 1; i < samples.length; i++) {
+    const currentSign = samples[i] >= 0;
+    if (currentSign !== previousSign) {
+      crossings++;
+      previousSign = currentSign;
+    }
+  }
+  return crossings;
+}
+
+function calculateSpectrum(buffer) {
+  // Simple spectrum analysis (without FFT library)
+  const samples = new Int16Array(buffer);
+  const bins = 32;
+  const spectrum = new Array(bins).fill(0);
+  
+  // Basic energy distribution across frequency bins
+  for (let bin = 0; bin < bins; bin++) {
+    let energy = 0;
+    const freq = bin / bins;
+    
+    for (let i = 0; i < samples.length - 1; i++) {
+      const diff = Math.abs(samples[i + 1] - samples[i]);
+      energy += diff * Math.sin(freq * Math.PI * i / samples.length);
+    }
+    spectrum[bin] = Math.min(255, Math.abs(energy) / samples.length * 10);
+  }
+  
+  return spectrum;
+}
+
+function calculateVAD(rms, zcr, spectralCentroid) {
+  // Simple VAD based on multiple features
+  const rmsThreshold = 0.01;
+  const zcrLowThreshold = 10;
+  const zcrHighThreshold = 100;
+  
+  let probability = 0;
+  
+  // RMS contribution (0-0.5)
+  if (rms > rmsThreshold) {
+    probability += Math.min(0.5, rms * 5);
+  }
+  
+  // ZCR contribution (0-0.3)
+  if (zcr > zcrLowThreshold && zcr < zcrHighThreshold) {
+    probability += 0.3 * (zcr - zcrLowThreshold) / (zcrHighThreshold - zcrLowThreshold);
+  }
+  
+  // Spectral centroid contribution (0-0.2)
+  if (spectralCentroid > 1000 && spectralCentroid < 4000) {
+    probability += 0.2;
+  }
+  
+  return Math.min(1, probability);
+}
+
+function detectPitch(buffer) {
+  // Simple autocorrelation-based pitch detection
+  const samples = new Int16Array(buffer);
+  const sampleRate = 16000;
+  const minPeriod = Math.floor(sampleRate / 400); // 400 Hz max
+  const maxPeriod = Math.floor(sampleRate / 50);  // 50 Hz min
+  
+  let maxCorrelation = 0;
+  let bestPeriod = 0;
+  
+  for (let period = minPeriod; period < maxPeriod; period++) {
+    let correlation = 0;
+    for (let i = 0; i < samples.length - period; i++) {
+      correlation += samples[i] * samples[i + period];
+    }
+    
+    if (correlation > maxCorrelation) {
+      maxCorrelation = correlation;
+      bestPeriod = period;
+    }
+  }
+  
+  if (maxCorrelation > 1000000) {
+    return sampleRate / bestPeriod;
+  }
+  return 0;
+}
+
+function calculateSpectralCentroid(spectrum) {
+  let weightedSum = 0;
+  let magnitudeSum = 0;
+  
+  for (let i = 0; i < spectrum.length; i++) {
+    weightedSum += i * spectrum[i];
+    magnitudeSum += spectrum[i];
+  }
+  
+  if (magnitudeSum === 0) return 0;
+  return (weightedSum / magnitudeSum) * (8000 / spectrum.length); // Scale to Hz
+}
+
 // Add immediate audio level monitoring
 let lastAudioCheck = Date.now();
+let lastAnalysisTime = Date.now();
 
 recordingStream.on('data', (chunk) => {
+  const now = Date.now();
+  
+  // Audio analysis every 50ms
+  if (now - lastAnalysisTime > 50) {
+    const rms = calculateRMS(chunk);
+    const dB = calculateDB(rms);
+    const zcr = calculateZeroCrossings(chunk);
+    const spectrum = calculateSpectrum(chunk);
+    const spectralCentroid = calculateSpectralCentroid(spectrum);
+    const vadProbability = calculateVAD(rms, zcr, spectralCentroid);
+    const pitch = detectPitch(chunk);
+    
+    // Convert buffer to array for peak detection
+    const audioData = [...chunk];
+    const maxLevel = Math.max(...audioData.map(v => Math.abs(v)));
+    
+    // Send audio analysis to clients
+    io.emit('audioData', {
+      level: dB,
+      rms: rms,
+      peak: maxLevel,
+      zeroCrossings: zcr,
+      spectrum: spectrum,
+      spectralCentroid: spectralCentroid,
+      vadProbability: vadProbability,
+      pitch: pitch
+    });
+    
+    lastAnalysisTime = now;
+  }
+  
   // Convert buffer to array for analysis
   const audioData = [...chunk];
   const maxLevel = Math.max(...audioData.map(v => Math.abs(v)));
