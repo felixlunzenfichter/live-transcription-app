@@ -287,6 +287,16 @@ recordingStream.on('data', (chunk) => {
     const audioData = [...chunk];
     const maxLevel = Math.max(...audioData.map(v => Math.abs(v)));
     
+    // Check for hardware mute (all samples are exactly zero)
+    const samples = new Int16Array(chunk);
+    let isMuted = true;
+    for (let i = 0; i < samples.length; i++) {
+      if (samples[i] !== 0) {
+        isMuted = false;
+        break;
+      }
+    }
+    
     // Send audio analysis to clients
     io.emit('audioData', {
       level: dB,
@@ -296,7 +306,8 @@ recordingStream.on('data', (chunk) => {
       spectrum: spectrum,
       spectralCentroid: spectralCentroid,
       vadProbability: vadProbability,
-      pitch: pitch
+      pitch: pitch,
+      isMuted: isMuted
     });
     
     lastAnalysisTime = now;

@@ -303,6 +303,10 @@
 
                 <div class="audio-stats">
                     <div class="stat-item">
+                        <div class="stat-label">Microphone</div>
+                        <div class="stat-value" id="muteStatus" style="color: #4caf50;">ACTIVE</div>
+                    </div>
+                    <div class="stat-item">
                         <div class="stat-label">RMS Energy</div>
                         <div class="stat-value" id="rmsValue">0.00</div>
                     </div>
@@ -313,10 +317,6 @@
                     <div class="stat-item">
                         <div class="stat-label">Zero Crossings</div>
                         <div class="stat-value" id="zcValue">0</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-label">Spectral Centroid</div>
-                        <div class="stat-value" id="centroidValue">0</div>
                     </div>
                 </div>
             </div>
@@ -535,6 +535,26 @@
 
         // Handle audio analysis data
         socket.on('audioData', (data) => {
+            // Check mute status
+            if (data.isMuted) {
+                document.getElementById('muteStatus').textContent = 'MUTED';
+                document.getElementById('muteStatus').style.color = '#f44336';
+                
+                // Override all values to zero when muted
+                drawLevelMeter(-60);
+                drawSpectrum(new Array(32).fill(0));
+                drawVAD(0);
+                drawPitch(0);
+                
+                document.getElementById('rmsValue').textContent = '0.000';
+                document.getElementById('peakValue').textContent = '0';
+                document.getElementById('zcValue').textContent = '0';
+                return;
+            } else {
+                document.getElementById('muteStatus').textContent = 'ACTIVE';
+                document.getElementById('muteStatus').style.color = '#4caf50';
+            }
+            
             // Update visualizations
             if (data.level !== undefined) {
                 drawLevelMeter(data.level);
